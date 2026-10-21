@@ -1,0 +1,28 @@
+name: Tests
+
+# Runs once per pull request (and on main), only when code changes. Pushes to
+# feature branches are covered by their pull request, so they are not tested
+# twice, and a newer push cancels the run it replaces.
+on:
+  push:
+    branches: [main]
+    paths: ["church_finder/**", "tests/**", "requirements.txt", ".github/workflows/tests.yml"]
+  pull_request:
+    paths: ["church_finder/**", "tests/**", "requirements.txt", ".github/workflows/tests.yml"]
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest -q

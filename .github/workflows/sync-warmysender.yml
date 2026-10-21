@@ -1,0 +1,81 @@
+name: Sync to WarmySender
+
+# Push contacts from the private data repo to WarmySender right now, for
+# example right after creating a state's lists in WarmySender. Needs the
+# WARMYSENDER_API_KEY secret, and DATA_REPO_TOKEN: a fine-grained token with
+# read and write access to Contents on katiejallred/church-finder-data. The
+# ledger of pushed addresses and STATUS.md are committed back to that repo.
+
+on:
+  workflow_dispatch:
+    inputs:
+      max:
+        description: "Most contacts to push this run (blank = WARMYSENDER_MAX_PER_NIGHT variable or 1000)"
+        type: string
+        default: ""
+      dry_run:
+        description: "Only report what would be pushed and which lists are missing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly-church-finder  # never race another run for the data repo
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Get the data repo
+        env:
+          DATA_REPO_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+        run: |
+          if [ -z "$DATA_REPO_TOKEN" ]; then
+            echo "::error::The DATA_REPO_TOKEN repository secret is not set (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+          .github/scripts/fetch-data.sh data
+      - name: Push contacts to WarmySender
+        env:
+          WARMYSENDER_API_KEY: ${{ secrets.WARMYSENDER_API_KEY }}
+          MAX: ${{ inputs.max || vars.WARMYSENDER_MAX_PER_NIGHT || '1000' }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ -z "$WARMYSENDER_API_KEY" ]; then
+            echo "::error::The WARMYSENDER_API_KEY repository secret is not set (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+          extra=""
+          if [ "$DRY_RUN" = "true" ]; then extra="--dry-run"; fi
+          # This repo is public, and so are its Actions logs: the full output
+          # (it names every address) goes to a log file in the private data
+          # repo, and only lines without an address are shown here.
+          mkdir -p data/logs
+          logfile="data/logs/sync-$(date -u +%Y-%m-%dT%H%M).log"
+          status=0
+          python -m church_finder nightly sync --data data --max "$MAX" $extra > "$logfile" 2>&1 || status=$?
+          grep -v '@' "$logfile" || true
+          echo "Full log and STATUS.md: https://github.com/katiejallred/church-finder-data (private)"
+          exit $status
+      - name: Commit the ledger to the data repo
+        if: always() && inputs.dry_run != true
+        run: |
+          cd data
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Nothing to record."
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "WarmySender sync $(date -u +%Y-%m-%dT%H:%M)"
+          git push origin HEAD
+          echo "Pushed. Browse: https://github.com/katiejallred/church-finder-data/blob/main/STATUS.md"
